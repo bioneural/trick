@@ -1,0 +1,71 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# trick-async — spawn background transcript reflection, exit immediately
+# https://github.com/bioneural/trick
+# MIT License — Copyright (c) 2026 Fort Asset LLC
+#
+# Called by PreCompact or SessionEnd hooks. Reads hook input JSON from
+# stdin, snapshots the transcript (it may be modified during compaction),
+# spawns bin/trick in the background, and exits immediately.
+#
+# Usage:
+#   echo '{"transcript_path":"...","session_id":"..."}' | bin/trick-async
+#
+# Hook wiring (.claude/settings.json):
+#   "PreCompact": [{ "hooks": [{ "type": "command", "command": "bin/trick-async" }] }]
+#   "SessionEnd": [{ "hooks": [{ "type": "command", "command": "bin/trick-async" }] }]
+#
+# Environment:
+#   CRIB_HOME — path to crib repo (passed through to trick)
+#
+# Dependencies: ruby (stdlib only)
+#
+# Behavior:
+#   1. Read hook input JSON from stdin
+#   2. Validate transcript_path exists
+#   3. Copy transcript to snapshot directory
+#   4. Spawn bin/trick --file <snapshot> in background (detached)
+#   5. Clean up old snapshots (keep last 5)
+#   6. Exit 0 immediately
+
+require 'json'
+require 'fileutils'
+
+input = JSON.parse($stdin.read) rescue nil
+exit 0 unless input
+
+transcript_path = input['transcript_path']
+exit 0 unless transcript_path && !transcript_path.empty? && File.exist?(transcript_path)
+
+session_id = input['session_id'] || 'unknown'
+cwd = input['cwd'] || Dir.pwd
+
+script_dir = File.dirname(File.realpath(__FILE__))
+trick = File.join(script_dir, 'trick')
+
+# Snapshot the transcript before compaction modifies it
+snapshot_dir = File.join(cwd, '.claude', 'trick-snapshots')
+FileUtils.mkdir_p(snapshot_dir)
+snapshot_path = File.join(snapshot_dir, "#{session_id}-#{Time.now.to_i}.jsonl")
+FileUtils.cp(transcript_path, snapshot_path)
+
+# Spawn reflector in background, detached from this process
+log_path = File.join(snapshot_dir, 'trick.log')
+pid = spawn(
+  { 'TRICK_SESSION_ID' => session_id },
+  trick, '--file', snapshot_path,
+  chdir: cwd,
+  out: [log_path, 'a'],
+  err: [log_path, 'a'],
+  pgroup: true
+)
+Process.detach(pid)
+
+# Clean up old snapshots (keep last 5)
+snapshots = Dir.glob(File.join(snapshot_dir, '*.jsonl')).sort_by { |f| File.mtime(f) }
+if snapshots.length > 5
+  snapshots[0...-5].each { |f| File.delete(f) rescue nil }
+end
+
+exit 0

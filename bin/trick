@@ -1,0 +1,340 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# trick — extract memories from conversation transcripts
+# https://github.com/bioneural/trick
+# MIT License — Copyright (c) 2026 Fort Asset LLC
+#
+# Reads a Claude Code conversation transcript (JSONL), identifies
+# information worth remembering, and writes it to crib. Tracks
+# progress via a cursor file so repeated runs on the same transcript
+# skip already-processed turns.
+#
+# Usage:
+#   bin/trick --file transcript.jsonl
+#   cat transcript.jsonl | bin/trick
+#
+# Environment:
+#   CRIB_HOME          Path to crib repo (default: sibling directory)
+#   TRICK_MODEL        Ollama model for extraction (default: gemma3:1b)
+#   TRICK_CURSOR_DIR   Directory for cursor file (default: .claude in cwd)
+#   TRICK_SESSION_ID   Session ID for cursor tracking (default: from transcript)
+#   OLLAMA_HOST        Ollama API base URL (default: http://localhost:11434)
+#
+# Output:
+#   Status on stderr. Nothing on stdout.
+#
+# Dependencies: ruby (stdlib only), crib, ollama
+#
+# Behavior:
+#   1. Parse JSONL transcript, extract user/assistant turns
+#   2. Read cursor file, skip already-processed turns
+#   3. Build conversation from unprocessed turns
+#   4. If conversation exceeds model context, keep most recent turns
+#   5. Call Ollama to extract memories
+#   6. Write each memory to crib via bin/crib write
+#   7. Update cursor file
+#   8. Exit 0 always (fail-open)
+
+require 'json'
+require 'open3'
+require 'net/http'
+require 'uri'
+require 'fileutils'
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
+TRICK_MODEL = ENV.fetch('TRICK_MODEL', 'gemma3:1b')
+OLLAMA_HOST = ENV.fetch('OLLAMA_HOST', 'http://localhost:11434')
+CURSOR_DIR = ENV.fetch('TRICK_CURSOR_DIR') { File.join(Dir.pwd, '.claude') }
+SESSION_ID = ENV.fetch('TRICK_SESSION_ID', nil)
+
+CRIB_HOME = ENV.fetch('CRIB_HOME') {
+  sibling = File.expand_path('../crib', Dir.pwd)
+  File.directory?(sibling) ? sibling : nil
+}
+CRIB = CRIB_HOME ? File.join(CRIB_HOME, 'bin', 'crib') : nil
+
+# ~2000 tokens. Fits comfortably in gemma3:1b context with the extraction prompt.
+MAX_CONVERSATION_CHARS = 8000
+
+# ---------------------------------------------------------------------------
+# Cursor tracking
+# ---------------------------------------------------------------------------
+
+CURSOR_FILE = File.join(CURSOR_DIR, 'trick-cursor.json')
+
+def read_cursor
+  return nil unless File.exist?(CURSOR_FILE)
+  JSON.parse(File.read(CURSOR_FILE))
+rescue JSON::ParserError
+  nil
+end
+
+def write_cursor(session_id, uuid, timestamp)
+  FileUtils.mkdir_p(CURSOR_DIR)
+  File.write(CURSOR_FILE, JSON.pretty_generate({
+    'session_id' => session_id,
+    'last_reflected_uuid' => uuid,
+    'last_reflected_timestamp' => timestamp
+  }))
+end
+
+# ---------------------------------------------------------------------------
+# JSONL parsing
+# ---------------------------------------------------------------------------
+
+def parse_transcript(input)
+  turns = []
+  input.each_line do |line|
+    line = line.strip
+    next if line.empty?
+    entry = JSON.parse(line)
+    turns << entry
+  rescue JSON::ParserError
+    next
+  end
+  turns
+end
+
+def extract_text(content)
+  return content if content.is_a?(String)
+  return '' unless content.is_a?(Array)
+  content.filter_map { |block|
+    block['text'] if block.is_a?(Hash) && block['type'] == 'text'
+  }.join("\n")
+end
+
+def conversation_turns(entries)
+  entries.filter_map do |entry|
+    type = entry['type']
+    next unless %w[user assistant].include?(type)
+
+    message = entry['message'] || entry
+    content = message['content']
+    text = extract_text(content)
+    next if text.nil? || text.strip.empty?
+
+    {
+      'uuid' => entry['uuid'],
+      'timestamp' => entry['timestamp'],
+      'session_id' => entry['sessionId'] || entry['session_id'],
+      'role' => type,
+      'text' => text.strip
+    }
+  end
+end
+
+def filter_new_turns(turns, cursor)
+  return turns if cursor.nil?
+
+  cursor_uuid = cursor['last_reflected_uuid']
+  idx = turns.index { |t| t['uuid'] == cursor_uuid }
+  return turns if idx.nil?
+
+  turns[(idx + 1)..]
+end
+
+# ---------------------------------------------------------------------------
+# Memory extraction
+# ---------------------------------------------------------------------------
+
+def build_conversation_text(turns)
+  turns.map { |t| "#{t['role'].upcase}: #{t['text']}" }.join("\n\n")
+end
+
+def trim_to_budget(turns)
+  trimmed = []
+  total = 0
+  turns.reverse_each do |t|
+    line = "#{t['role'].upcase}: #{t['text']}"
+    break if total + line.length > MAX_CONVERSATION_CHARS
+    trimmed.unshift(t)
+    total += line.length
+  end
+  trimmed
+end
+
+def call_ollama(prompt)
+  uri = URI("#{OLLAMA_HOST}/api/generate")
+  req = Net::HTTP::Post.new(uri, 'Content-Type' => 'application/json')
+  req.body = JSON.generate({
+    model: TRICK_MODEL,
+    prompt: prompt,
+    stream: false
+  })
+
+  response = Net::HTTP.start(uri.hostname, uri.port) do |http|
+    http.read_timeout = 120
+    http.request(req)
+  end
+
+  unless response.is_a?(Net::HTTPSuccess)
+    $stderr.puts "trick: ollama error: HTTP #{response.code}"
+    return nil
+  end
+
+  data = JSON.parse(response.body)
+  data['response']
+rescue Errno::ECONNREFUSED
+  $stderr.puts 'trick: ollama not running (connection refused)'
+  nil
+rescue => e
+  $stderr.puts "trick: ollama failed: #{e.message}"
+  nil
+end
+
+EXTRACTION_PROMPT = <<~PROMPT
+  You are a memory extraction system. Given a conversation between a user
+  and an AI assistant, identify information worth remembering for future
+  sessions.
+
+  Extract memories in these categories:
+  - decision: A choice that was made and why
+  - correction: Something previously believed that turned out wrong
+  - error: A failure that occurred and what was learned
+  - note: Important context, facts, or preferences
+
+  Return a JSON array of objects with "type" and "content" fields.
+  Each content should be a single clear sentence capturing the essential
+  information. Do not extract trivial operational details (file edits,
+  command outputs, routine code changes). Focus on: decisions and their
+  rationale, user preferences, domain knowledge, corrections, and lessons
+  learned.
+
+  If nothing worth remembering was discussed, return an empty array: []
+  Return ONLY valid JSON. No explanation.
+
+  Conversation:
+PROMPT
+
+def extract_memories(conversation_text)
+  prompt = "#{EXTRACTION_PROMPT}#{conversation_text}"
+
+  result = call_ollama(prompt)
+  return [] if result.nil? || result.empty?
+
+  json_str = result[/\[.*\]/m]
+  return [] if json_str.nil?
+
+  memories = JSON.parse(json_str)
+  return [] unless memories.is_a?(Array)
+
+  memories.select { |m|
+    m.is_a?(Hash) &&
+      m['type'] && m['content'] &&
+      %w[decision correction error note].include?(m['type']) &&
+      m['content'].is_a?(String) && m['content'].length > 10
+  }
+rescue JSON::ParserError
+  $stderr.puts 'trick: failed to parse extraction response'
+  []
+end
+
+# ---------------------------------------------------------------------------
+# Write to crib
+# ---------------------------------------------------------------------------
+
+def write_to_crib(type, content)
+  if CRIB.nil?
+    $stderr.puts 'trick: crib not found — set CRIB_HOME or place crib as sibling directory'
+    return false
+  end
+
+  _stdout, stderr, status = Open3.capture3(
+    CRIB, 'write',
+    stdin_data: "type=#{type} #{content}"
+  )
+  unless status.success?
+    $stderr.puts "trick: crib write failed: #{stderr.strip}"
+    return false
+  end
+  true
+rescue Errno::ENOENT
+  $stderr.puts "trick: crib not found at #{CRIB}"
+  false
+end
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def run(input)
+  entries = parse_transcript(input)
+  if entries.empty?
+    $stderr.puts 'trick: empty or invalid transcript'
+    return
+  end
+
+  turns = conversation_turns(entries)
+  if turns.empty?
+    $stderr.puts 'trick: no conversation turns found'
+    return
+  end
+
+  session_id = SESSION_ID || turns.first['session_id'] || 'unknown'
+
+  cursor = read_cursor
+  if cursor && cursor['session_id'] != session_id
+    cursor = nil
+  end
+
+  new_turns = filter_new_turns(turns, cursor)
+  if new_turns.empty?
+    $stderr.puts 'trick: no new turns to process'
+    return
+  end
+
+  effective_turns = new_turns
+  conversation = build_conversation_text(effective_turns)
+  if conversation.length > MAX_CONVERSATION_CHARS
+    effective_turns = trim_to_budget(new_turns)
+    conversation = build_conversation_text(effective_turns)
+  end
+
+  $stderr.puts "trick: processing #{new_turns.length} turns (#{conversation.length} chars)"
+
+  memories = extract_memories(conversation)
+  if memories.empty?
+    $stderr.puts 'trick: no memories extracted'
+  else
+    written = 0
+    memories.each do |mem|
+      written += 1 if write_to_crib(mem['type'], mem['content'])
+    end
+    $stderr.puts "trick: extracted #{memories.length} memories, wrote #{written} to crib"
+  end
+
+  last = new_turns.last
+  write_cursor(session_id, last['uuid'], last['timestamp'])
+rescue => e
+  $stderr.puts "trick: #{e.message}"
+end
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+file_path = nil
+ARGV.each_with_index do |arg, i|
+  file_path = ARGV[i + 1] if arg == '--file' && ARGV[i + 1]
+end
+
+if file_path
+  unless File.exist?(file_path)
+    $stderr.puts "trick: file not found: #{file_path}"
+    exit 0
+  end
+  run(File.read(file_path))
+else
+  input = $stdin.read
+  if input.nil? || input.strip.empty?
+    $stderr.puts 'trick: no input'
+    exit 0
+  end
+  run(input)
+end
+
+exit 0
