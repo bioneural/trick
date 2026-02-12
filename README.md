@@ -224,4 +224,4 @@ Tests run against a temporary directory that is created and destroyed on each ru
 
 ## License
 
-MIT — Fort Asset LLC
+MIT — Kerry Ivan Kurian

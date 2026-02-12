@@ -3,7 +3,7 @@
 
 # trick — extract memories from conversation transcripts
 # https://github.com/bioneural/trick
-# MIT License — Copyright (c) 2026 Fort Asset LLC
+# MIT License — Copyright (c) 2026 Kerry Ivan Kurian
 #
 # Reads a Claude Code conversation transcript (JSONL), identifies
 # information worth remembering, and writes it to crib. Tracks
