@@ -21,7 +21,6 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TRICK="$SCRIPT_DIR/trick"
-TRICK_ASYNC="$SCRIPT_DIR/trick-async"
 
 # Temporary directory for all test artifacts
 TMPDIR_BASE=$(mktemp -d)
@@ -92,7 +91,7 @@ test_crib_exists
 
 test_ruby_syntax() {
   local bad=()
-  for script in "$TRICK" "$TRICK_ASYNC"; do
+  for script in "$TRICK"; do
     ruby -c "$script" >/dev/null 2>&1 || bad+=("$(basename "$script")")
   done
   if [[ ${#bad[@]} -eq 0 ]]; then
@@ -334,58 +333,58 @@ test_memories_written_to_crib() {
 test_memories_written_to_crib
 
 # ---------------------------------------------------------------------------
-section "Async wrapper"
+section "Detach mode (-d)"
 # ---------------------------------------------------------------------------
 
-test_async_exits_immediately() {
+test_detach_exits_immediately() {
   local start end_time elapsed
   start=$(date +%s)
-  echo "{\"transcript_path\":\"$TRANSCRIPT\",\"session_id\":\"async-test\",\"cwd\":\"$TMPDIR_BASE\"}" | "$TRICK_ASYNC" 2>/dev/null
+  echo "{\"transcript_path\":\"$TRANSCRIPT\",\"session_id\":\"detach-test\",\"cwd\":\"$TMPDIR_BASE\"}" | "$TRICK" -d 2>/dev/null
   local exit_code=$?
   end_time=$(date +%s)
   elapsed=$((end_time - start))
   if [[ $exit_code -eq 0 && $elapsed -lt 3 ]]; then
-    pass "Async wrapper exits immediately (${elapsed}s)"
+    pass "Detach exits immediately (${elapsed}s)"
   else
-    fail "Async" "exit=$exit_code, elapsed=${elapsed}s"
+    fail "Detach" "exit=$exit_code, elapsed=${elapsed}s"
   fi
 }
-test_async_exits_immediately
+test_detach_exits_immediately
 
-test_async_creates_snapshot() {
+test_detach_creates_snapshot() {
   local snapshots
   snapshots=$(ls "$TMPDIR_BASE/.claude/trick-snapshots/"*.jsonl 2>/dev/null | wc -l | tr -d ' ')
   if [[ "$snapshots" -gt 0 ]]; then
-    pass "Async wrapper creates transcript snapshot"
+    pass "Detach creates transcript snapshot"
   else
-    fail "Async snapshot" "no snapshots found"
+    fail "Detach snapshot" "no snapshots found"
   fi
 }
-test_async_creates_snapshot
+test_detach_creates_snapshot
 
-test_async_empty_input() {
+test_detach_empty_input() {
   local exit_code
-  echo "" | "$TRICK_ASYNC" 2>/dev/null
+  echo "" | "$TRICK" -d 2>/dev/null
   exit_code=$?
   if [[ $exit_code -eq 0 ]]; then
-    pass "Async wrapper handles empty input"
+    pass "Detach handles empty input"
   else
-    fail "Async empty" "expected exit 0, got $exit_code"
+    fail "Detach empty" "expected exit 0, got $exit_code"
   fi
 }
-test_async_empty_input
+test_detach_empty_input
 
-test_async_missing_transcript() {
+test_detach_missing_transcript() {
   local exit_code
-  echo '{"transcript_path":"/nonexistent/file.jsonl","session_id":"x"}' | "$TRICK_ASYNC" 2>/dev/null
+  echo '{"transcript_path":"/nonexistent/file.jsonl","session_id":"x"}' | "$TRICK" -d 2>/dev/null
   exit_code=$?
   if [[ $exit_code -eq 0 ]]; then
-    pass "Async wrapper handles missing transcript"
+    pass "Detach handles missing transcript"
   else
-    fail "Async missing" "expected exit 0, got $exit_code"
+    fail "Detach missing" "expected exit 0, got $exit_code"
   fi
 }
-test_async_missing_transcript
+test_detach_missing_transcript
 
 # ---------------------------------------------------------------------------
 # Summary

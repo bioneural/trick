@@ -15,10 +15,10 @@ A background reflector that mines Claude Code transcripts for memories and write
 Claude Code conversations generate a JSONL transcript on disk. When the context window fills up (~98%), compaction fires. The `PreCompact` hook triggers trick, which:
 
 1. Snapshots the transcript (compaction may modify it)
-2. Spawns a background reflector
+2. Spawns `trick --file <snapshot>` in the background
 3. Exits immediately (never blocks compaction)
 
-The reflector runs asynchronously:
+The background process:
 
 1. Parses the JSONL transcript into conversation turns
 2. Checks a cursor file — skips turns it already processed
@@ -30,7 +30,7 @@ The reflector runs asynchronously:
 The next retrieval — whether from the post-compaction `SessionStart` or the next `UserPromptSubmit` — picks up the new memories. The system is eventually consistent.
 
 ```
-Context fills → PreCompact → trick-async → trick (background)
+Context fills → PreCompact → trick -d → trick --file (background)
                                               ↓
                                            Ollama extracts memories
                                               ↓
@@ -44,14 +44,17 @@ Context fills → PreCompact → trick-async → trick (background)
 ## Usage
 
 ```sh
-# Reflect on a transcript file
+# Foreground — reflect on a transcript file
 bin/trick --file path/to/transcript.jsonl
 
-# Or pipe via stdin
+# Foreground — pipe via stdin
 cat transcript.jsonl | bin/trick
+
+# Detach — snapshot transcript, spawn in background, exit immediately
+echo '{"transcript_path":"...","session_id":"..."}' | bin/trick -d
 ```
 
-Trick is not typically called directly. It runs in the background, triggered by Claude Code hooks.
+Trick is not typically called directly. It runs via `-d`, triggered by Claude Code hooks.
 
 ### Hook wiring
 
@@ -65,7 +68,7 @@ Add to `.claude/settings.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "$TRICK_HOME/bin/trick-async"
+            "command": "$TRICK_HOME/bin/trick -d"
           }
         ]
       }
@@ -75,7 +78,7 @@ Add to `.claude/settings.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "$TRICK_HOME/bin/trick-async"
+            "command": "$TRICK_HOME/bin/trick -d"
           }
         ]
       }
@@ -145,7 +148,7 @@ Session starts
 │
 ├─ Context hits ~98%
 │  ├─ PreCompact fires
-│  │  └─ trick-async snapshots + spawns trick in background
+│  │  └─ trick -d snapshots + spawns trick in background
 │  │
 │  ├─ Compaction happens
 │  │
@@ -161,7 +164,7 @@ Session starts
 │  └─ (cycle repeats — cursor skips already-processed turns)
 │
 ├─ User closes terminal
-│  └─ SessionEnd fires → trick-async on remaining turns
+│  └─ SessionEnd fires → trick -d on remaining turns
 ```
 
 The hot path (agent explicitly calling `bin/crib write`) and the cold path (trick extracting from transcripts) complement each other. Explicit writes capture what the agent knows is important. Trick catches what slipped through.
@@ -197,11 +200,11 @@ Memory extraction
   ✓ Extraction completes without error
   ✓ Memories written to crib
 
-Async wrapper
-  ✓ Async wrapper exits immediately
-  ✓ Async wrapper creates transcript snapshot
-  ✓ Async wrapper handles empty input
-  ✓ Async wrapper handles missing transcript
+Detach mode (-d)
+  ✓ Detach exits immediately
+  ✓ Detach creates transcript snapshot
+  ✓ Detach handles empty input
+  ✓ Detach handles missing transcript
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 20 passed

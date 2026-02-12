@@ -11,8 +11,13 @@
 # skip already-processed turns.
 #
 # Usage:
-#   bin/trick --file transcript.jsonl
-#   cat transcript.jsonl | bin/trick
+#   bin/trick --file transcript.jsonl        Foreground extraction
+#   cat transcript.jsonl | bin/trick          Foreground via stdin
+#   echo '{"transcript_path":"..."}' | bin/trick -d   Detach: snapshot, spawn, exit
+#
+# The -d flag is for hook wiring. It reads hook input JSON from stdin,
+# snapshots the transcript (compaction may modify it), spawns a foreground
+# trick in the background, and exits immediately. The hook never blocks.
 #
 # Environment:
 #   CRIB_HOME          Path to crib repo (default: sibling directory)
@@ -26,7 +31,7 @@
 #
 # Dependencies: ruby (stdlib only), crib, ollama
 #
-# Behavior:
+# Behavior (foreground):
 #   1. Parse JSONL transcript, extract user/assistant turns
 #   2. Read cursor file, skip already-processed turns
 #   3. Build conversation from unprocessed turns
@@ -35,6 +40,14 @@
 #   6. Write each memory to crib via bin/crib write
 #   7. Update cursor file
 #   8. Exit 0 always (fail-open)
+#
+# Behavior (-d):
+#   1. Read hook input JSON from stdin
+#   2. Validate transcript_path exists
+#   3. Copy transcript to snapshot directory
+#   4. Spawn trick --file <snapshot> in background (detached)
+#   5. Clean up old snapshots (keep last 5)
+#   6. Exit 0 immediately
 
 require 'json'
 require 'open3'
@@ -314,15 +327,58 @@ rescue => e
 end
 
 # ---------------------------------------------------------------------------
+# Detach mode (-d)
+# ---------------------------------------------------------------------------
+
+def detach
+  input = JSON.parse($stdin.read) rescue nil
+  exit 0 unless input
+
+  transcript_path = input['transcript_path']
+  exit 0 unless transcript_path && !transcript_path.empty? && File.exist?(transcript_path)
+
+  session_id = input['session_id'] || 'unknown'
+  cwd = input['cwd'] || Dir.pwd
+
+  snapshot_dir = File.join(cwd, '.claude', 'trick-snapshots')
+  FileUtils.mkdir_p(snapshot_dir)
+  snapshot_path = File.join(snapshot_dir, "#{session_id}-#{Time.now.to_i}.jsonl")
+  FileUtils.cp(transcript_path, snapshot_path)
+
+  log_path = File.join(snapshot_dir, 'trick.log')
+  trick = File.realpath(__FILE__)
+  pid = spawn(
+    { 'TRICK_SESSION_ID' => session_id },
+    trick, '--file', snapshot_path,
+    chdir: cwd,
+    out: [log_path, 'a'],
+    err: [log_path, 'a'],
+    pgroup: true
+  )
+  Process.detach(pid)
+
+  # Clean up old snapshots (keep last 5)
+  snapshots = Dir.glob(File.join(snapshot_dir, '*.jsonl')).sort_by { |f| File.mtime(f) }
+  if snapshots.length > 5
+    snapshots[0...-5].each { |f| File.delete(f) rescue nil }
+  end
+
+  exit 0
+end
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
+detach_mode = ARGV.delete('-d')
 file_path = nil
 ARGV.each_with_index do |arg, i|
   file_path = ARGV[i + 1] if arg == '--file' && ARGV[i + 1]
 end
 
-if file_path
+if detach_mode
+  detach
+elsif file_path
   unless File.exist?(file_path)
     $stderr.puts "trick: file not found: #{file_path}"
     exit 0
