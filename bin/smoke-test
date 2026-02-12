@@ -25,7 +25,7 @@ TRICK="$SCRIPT_DIR/trick"
 # Temporary directory for all test artifacts
 TMPDIR_BASE=$(mktemp -d)
 export CRIB_DB="$TMPDIR_BASE/test.db"
-export TRICK_CLAUDE_DIR="$TMPDIR_BASE"
+export TRICK_STATE_DIR="$TMPDIR_BASE"
 
 # Resolve crib
 CRIB_HOME="${CRIB_HOME:-$(dirname "$(dirname "$SCRIPT_DIR")")/crib}"
@@ -353,7 +353,7 @@ test_detach_exits_immediately
 
 test_detach_creates_snapshot() {
   local snapshots
-  snapshots=$(ls "$TMPDIR_BASE/.claude/trick-snapshots/"*.jsonl 2>/dev/null | wc -l | tr -d ' ')
+  snapshots=$(ls "$TMPDIR_BASE/.state/trick/snapshots/"*.jsonl 2>/dev/null | wc -l | tr -d ' ')
   if [[ "$snapshots" -gt 0 ]]; then
     pass "Detach creates transcript snapshot"
   else

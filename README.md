@@ -91,7 +91,7 @@ Add to `.claude/settings.json`:
 
 ### Cursor tracking
 
-Trick tracks its progress in `.claude/trick-cursor.json`:
+Trick tracks its progress in `.state/trick/trick-cursor.json`:
 
 ```json
 {
@@ -109,7 +109,7 @@ Each run processes only turns after the cursor. A new session ID resets the curs
 |----------|---------|---------|
 | `CRIB_HOME` | sibling directory | Path to the crib repo |
 | `TRICK_MODEL` | `gemma3:1b` | Ollama model for memory extraction |
-| `TRICK_CLAUDE_DIR` | `.claude` in cwd | Path to .claude directory |
+| `TRICK_STATE_DIR` | `.state/trick` in cwd | Path to trick state directory |
 | `TRICK_SESSION_ID` | from transcript | Override session ID |
 | `OLLAMA_HOST` | `http://localhost:11434` | Ollama API base URL |
 
