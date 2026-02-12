@@ -55,6 +55,12 @@ require 'net/http'
 require 'uri'
 require 'fileutils'
 
+SPILL_HOME = ENV['SPILL_HOME'] || File.expand_path('../../spill', __dir__)
+if File.directory?(SPILL_HOME)
+  require File.join(SPILL_HOME, 'lib', 'spill')
+  Spill.configure(tool: 'trick')
+end
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -185,17 +191,17 @@ def call_ollama(prompt)
   end
 
   unless response.is_a?(Net::HTTPSuccess)
-    $stderr.puts "trick: ollama error: HTTP #{response.code}"
+    defined?(Spill) ? Spill.error("ollama error: HTTP #{response.code}") : $stderr.puts("trick: ollama error: HTTP #{response.code}")
     return nil
   end
 
   data = JSON.parse(response.body)
   data['response']
 rescue Errno::ECONNREFUSED
-  $stderr.puts 'trick: ollama not running (connection refused)'
+  defined?(Spill) ? Spill.warn("ollama not running (connection refused)") : $stderr.puts("trick: ollama not running (connection refused)")
   nil
 rescue => e
-  $stderr.puts "trick: ollama failed: #{e.message}"
+  defined?(Spill) ? Spill.error("ollama failed: #{e.message}") : $stderr.puts("trick: ollama failed: #{e.message}")
   nil
 end
 
@@ -242,7 +248,7 @@ def extract_memories(conversation_text)
       m['content'].is_a?(String) && m['content'].length > 10
   }
 rescue JSON::ParserError
-  $stderr.puts 'trick: failed to parse extraction response'
+  defined?(Spill) ? Spill.error("failed to parse extraction response") : $stderr.puts("trick: failed to parse extraction response")
   []
 end
 
@@ -252,7 +258,7 @@ end
 
 def write_to_crib(type, content)
   if CRIB.nil?
-    $stderr.puts 'trick: crib not found — set CRIB_HOME or place crib as sibling directory'
+    defined?(Spill) ? Spill.warn("crib not found — set CRIB_HOME or place crib as sibling directory") : $stderr.puts("trick: crib not found — set CRIB_HOME or place crib as sibling directory")
     return false
   end
 
@@ -261,12 +267,12 @@ def write_to_crib(type, content)
     stdin_data: "type=#{type} #{content}"
   )
   unless status.success?
-    $stderr.puts "trick: crib write failed: #{stderr.strip}"
+    defined?(Spill) ? Spill.error("crib write failed: #{stderr.strip}") : $stderr.puts("trick: crib write failed: #{stderr.strip}")
     return false
   end
   true
 rescue Errno::ENOENT
-  $stderr.puts "trick: crib not found at #{CRIB}"
+  defined?(Spill) ? Spill.error("crib not found at #{CRIB}") : $stderr.puts("trick: crib not found at #{CRIB}")
   false
 end
 
@@ -277,13 +283,13 @@ end
 def run(input)
   entries = parse_transcript(input)
   if entries.empty?
-    $stderr.puts 'trick: empty or invalid transcript'
+    defined?(Spill) ? Spill.info("empty or invalid transcript") : $stderr.puts("trick: empty or invalid transcript")
     return
   end
 
   turns = conversation_turns(entries)
   if turns.empty?
-    $stderr.puts 'trick: no conversation turns found'
+    defined?(Spill) ? Spill.info("no conversation turns found") : $stderr.puts("trick: no conversation turns found")
     return
   end
 
@@ -296,7 +302,7 @@ def run(input)
 
   new_turns = filter_new_turns(turns, cursor)
   if new_turns.empty?
-    $stderr.puts 'trick: no new turns to process'
+    defined?(Spill) ? Spill.info("no new turns to process") : $stderr.puts("trick: no new turns to process")
     return
   end
 
@@ -307,23 +313,23 @@ def run(input)
     conversation = build_conversation_text(effective_turns)
   end
 
-  $stderr.puts "trick: processing #{new_turns.length} turns (#{conversation.length} chars)"
+  defined?(Spill) ? Spill.info("processing #{new_turns.length} turns (#{conversation.length} chars)") : $stderr.puts("trick: processing #{new_turns.length} turns (#{conversation.length} chars)")
 
   memories = extract_memories(conversation)
   if memories.empty?
-    $stderr.puts 'trick: no memories extracted'
+    defined?(Spill) ? Spill.info("no memories extracted") : $stderr.puts("trick: no memories extracted")
   else
     written = 0
     memories.each do |mem|
       written += 1 if write_to_crib(mem['type'], mem['content'])
     end
-    $stderr.puts "trick: extracted #{memories.length} memories, wrote #{written} to crib"
+    defined?(Spill) ? Spill.info("extracted #{memories.length} memories, wrote #{written} to crib") : $stderr.puts("trick: extracted #{memories.length} memories, wrote #{written} to crib")
   end
 
   last = new_turns.last
   write_cursor(session_id, last['uuid'], last['timestamp'])
 rescue => e
-  $stderr.puts "trick: #{e.message}"
+  defined?(Spill) ? Spill.error(e.message) : $stderr.puts("trick: #{e.message}")
 end
 
 # ---------------------------------------------------------------------------
@@ -380,14 +386,14 @@ if detach_mode
   detach
 elsif file_path
   unless File.exist?(file_path)
-    $stderr.puts "trick: file not found: #{file_path}"
+    defined?(Spill) ? Spill.warn("file not found: #{file_path}") : $stderr.puts("trick: file not found: #{file_path}")
     exit 0
   end
   run(File.read(file_path))
 else
   input = $stdin.read
   if input.nil? || input.strip.empty?
-    $stderr.puts 'trick: no input'
+    defined?(Spill) ? Spill.info("no input") : $stderr.puts("trick: no input")
     exit 0
   end
   run(input)
