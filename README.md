@@ -106,7 +106,7 @@ Each run processes only turns after the cursor. A new session ID resets the curs
 |----------|---------|---------|
 | `CRIB_HOME` | sibling directory | Path to the crib repo |
 | `TRICK_MODEL` | `gemma3:1b` | Ollama model for memory extraction |
-| `TRICK_CURSOR_DIR` | `.claude` in cwd | Directory for cursor file |
+| `TRICK_CLAUDE_DIR` | `.claude` in cwd | Path to .claude directory |
 | `TRICK_SESSION_ID` | from transcript | Override session ID |
 | `OLLAMA_HOST` | `http://localhost:11434` | Ollama API base URL |
 
@@ -213,7 +213,7 @@ Tests run against a temporary directory that is created and destroyed on each ru
 
 ## Prerequisites
 
-- Ruby 3.x (ships with macOS)
+- Ruby 3.x
 - [crib](https://github.com/bioneural/crib) — memory storage and retrieval
 - [Ollama](https://ollama.com) with the extraction model pulled (default: `gemma3:1b`)
 

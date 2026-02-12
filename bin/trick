@@ -17,7 +17,7 @@
 # Environment:
 #   CRIB_HOME          Path to crib repo (default: sibling directory)
 #   TRICK_MODEL        Ollama model for extraction (default: gemma3:1b)
-#   TRICK_CURSOR_DIR   Directory for cursor file (default: .claude in cwd)
+#   TRICK_CLAUDE_DIR   Path to .claude directory (default: .claude in cwd)
 #   TRICK_SESSION_ID   Session ID for cursor tracking (default: from transcript)
 #   OLLAMA_HOST        Ollama API base URL (default: http://localhost:11434)
 #
@@ -48,7 +48,7 @@ require 'fileutils'
 
 TRICK_MODEL = ENV.fetch('TRICK_MODEL', 'gemma3:1b')
 OLLAMA_HOST = ENV.fetch('OLLAMA_HOST', 'http://localhost:11434')
-CURSOR_DIR = ENV.fetch('TRICK_CURSOR_DIR') { File.join(Dir.pwd, '.claude') }
+CLAUDE_DIR = ENV.fetch('TRICK_CLAUDE_DIR') { File.join(Dir.pwd, '.claude') }
 SESSION_ID = ENV.fetch('TRICK_SESSION_ID', nil)
 
 CRIB_HOME = ENV.fetch('CRIB_HOME') {
@@ -64,7 +64,7 @@ MAX_CONVERSATION_CHARS = 8000
 # Cursor tracking
 # ---------------------------------------------------------------------------
 
-CURSOR_FILE = File.join(CURSOR_DIR, 'trick-cursor.json')
+CURSOR_FILE = File.join(CLAUDE_DIR, 'trick-cursor.json')
 
 def read_cursor
   return nil unless File.exist?(CURSOR_FILE)
@@ -74,7 +74,7 @@ rescue JSON::ParserError
 end
 
 def write_cursor(session_id, uuid, timestamp)
-  FileUtils.mkdir_p(CURSOR_DIR)
+  FileUtils.mkdir_p(CLAUDE_DIR)
   File.write(CURSOR_FILE, JSON.pretty_generate({
     'session_id' => session_id,
     'last_reflected_uuid' => uuid,

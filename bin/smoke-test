@@ -26,7 +26,7 @@ TRICK_ASYNC="$SCRIPT_DIR/trick-async"
 # Temporary directory for all test artifacts
 TMPDIR_BASE=$(mktemp -d)
 export CRIB_DB="$TMPDIR_BASE/test.db"
-export TRICK_CURSOR_DIR="$TMPDIR_BASE"
+export TRICK_CLAUDE_DIR="$TMPDIR_BASE"
 
 # Resolve crib
 CRIB_HOME="${CRIB_HOME:-$(dirname "$(dirname "$SCRIPT_DIR")")/crib}"
