@@ -29,7 +29,7 @@
 # Output:
 #   Status on stderr. Nothing on stdout.
 #
-# Dependencies: ruby (stdlib only), crib, ollama
+# Dependencies: ruby (stdlib plus sqlite3 gem). No other gems.
 #
 # Behavior (foreground):
 #   1. Parse JSONL transcript, extract user/assistant turns
@@ -211,17 +211,20 @@ EXTRACTION_PROMPT = <<~PROMPT
   sessions.
 
   Extract memories in these categories:
-  - decision: A choice that was made and why
+  - decision: A choice that was made. Include WHY the choice was made,
+    not just WHAT was chosen.
   - correction: Something previously believed that turned out wrong
   - error: A failure that occurred and what was learned
+  - reasoning: A chain of reasoning that led to a significant conclusion.
+    Capture the key steps, not just the final answer.
   - note: Important context, facts, or preferences
 
   Return a JSON array of objects with "type" and "content" fields.
-  Each content should be a single clear sentence capturing the essential
-  information. Do not extract trivial operational details (file edits,
+  Each content should capture the essential information including
+  rationale. Do not extract trivial operational details (file edits,
   command outputs, routine code changes). Focus on: decisions and their
-  rationale, user preferences, domain knowledge, corrections, and lessons
-  learned.
+  rationale, user preferences, domain knowledge, corrections, reasoning
+  chains, and lessons learned.
 
   If nothing worth remembering was discussed, return an empty array: []
   Return ONLY valid JSON. No explanation.
@@ -244,7 +247,7 @@ def extract_memories(conversation_text)
   memories.select { |m|
     m.is_a?(Hash) &&
       m['type'] && m['content'] &&
-      %w[decision correction error note].include?(m['type']) &&
+      %w[decision correction error reasoning note].include?(m['type']) &&
       m['content'].is_a?(String) && m['content'].length > 10
   }
 rescue JSON::ParserError
@@ -375,6 +378,38 @@ end
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
+
+if ARGV.first == 'doctor'
+  report = {}
+
+  report['ruby'] = { 'version' => RUBY_VERSION, 'ok' => true }
+
+  # Ollama
+  ollama_out, ollama_status = Open3.capture2('ollama', '--version')
+  report['ollama'] = {
+    'version' => ollama_status.success? ? ollama_out.strip : nil,
+    'ok' => ollama_status.success?
+  }
+
+  # Ollama reachable
+  begin
+    uri = URI("#{OLLAMA_HOST}/api/tags")
+    response = Net::HTTP.get_response(uri)
+    report['ollama_api'] = { 'host' => OLLAMA_HOST, 'ok' => response.is_a?(Net::HTTPSuccess) }
+  rescue => e
+    report['ollama_api'] = { 'host' => OLLAMA_HOST, 'ok' => false, 'error' => e.message }
+  end
+
+  # Crib binary
+  report['crib'] = { 'path' => CRIB.to_s, 'ok' => CRIB && File.executable?(CRIB) }
+
+  # State dir
+  report['state_dir'] = { 'path' => STATE_DIR, 'ok' => true }
+
+  report['ok'] = report.values.all? { |v| v.is_a?(Hash) ? v['ok'] != false : true }
+  puts JSON.pretty_generate(report)
+  exit(report['ok'] ? 0 : 1)
+end
 
 detach_mode = ARGV.delete('-d')
 file_path = nil
