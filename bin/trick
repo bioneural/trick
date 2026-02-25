@@ -218,6 +218,9 @@ EXTRACTION_PROMPT = <<~PROMPT
   - reasoning: A chain of reasoning that led to a significant conclusion.
     Capture the key steps, not just the final answer.
   - note: Important context, facts, or preferences
+  - preference: A stated value, trade-off preference, or judgment pattern.
+    "Prefer X over Y", "Always/never do Z", or quality signals like
+    "simplicity matters more than performance".
 
   Return a JSON array of objects with "type" and "content" fields.
   Each content should capture the essential information including
@@ -247,7 +250,7 @@ def extract_memories(conversation_text)
   memories.select { |m|
     m.is_a?(Hash) &&
       m['type'] && m['content'] &&
-      %w[decision correction error reasoning note].include?(m['type']) &&
+      %w[decision correction error reasoning note preference].include?(m['type']) &&
       m['content'].is_a?(String) && m['content'].length > 10
   }
 rescue JSON::ParserError
