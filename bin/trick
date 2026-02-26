@@ -409,6 +409,32 @@ if ARGV.first == 'doctor'
   # State dir
   report['state_dir'] = { 'path' => STATE_DIR, 'ok' => true }
 
+  # Probe
+  if ARGV.include?('--probe')
+    if report.dig('ollama_api', 'ok')
+      begin
+        require 'tmpdir'
+        probe_db = File.join(Dir.tmpdir, "trick-probe-#{$$}.db")
+        probe_env = { 'CRIB_DB' => probe_db, 'TRICK_SESSION_ID' => "probe-#{$$}" }
+        crib_bin = CRIB.to_s
+        Open3.capture2e(probe_env, 'ruby', crib_bin, 'init')
+        transcript = '{"type":"human","message":"I decided to use PostgreSQL for the production database because it handles concurrent writes better than SQLite."}'
+        Open3.capture2e(probe_env, 'ruby', __FILE__, stdin_data: transcript)
+        count_out, = Open3.capture2('sqlite3', probe_db, 'SELECT COUNT(*) FROM entries;', err: File::NULL)
+        entry_count = count_out.strip.to_i
+        report['probe'] = { 'ok' => true, 'entries' => entry_count }
+        report['probe']['warn'] = 'no entries extracted from probe transcript' if entry_count == 0
+      rescue => e
+        report['probe'] = { 'ok' => true, 'warn' => "probe error: #{e.message}" }
+      ensure
+        FileUtils.rm_f(probe_db) if probe_db
+      end
+    else
+      report['probe'] = { 'ok' => true, 'skipped' => 'ollama unavailable' }
+    end
+  end
+
+  report['protocol_version'] = 1
   report['ok'] = report.values.all? { |v| v.is_a?(Hash) ? v['ok'] != false : true }
   puts JSON.pretty_generate(report)
   exit(report['ok'] ? 0 : 1)
